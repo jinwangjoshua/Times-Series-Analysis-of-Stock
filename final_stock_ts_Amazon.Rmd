@@ -1,0 +1,250 @@
+---
+title: "TS_stock_Amazon"
+author: "Wang_Sunil"
+date: "November 13, 2017"
+output:  
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+### 1.1 Goal
+The Goal of this project is to predict the Amazon's stock prices by doing data analysis on past data. 
+
+### 1.2 Dataset
+In this paper, we imported and read the past stock data for Amazon from Yahoo Finance(??????!!) and plotted it in order to understand the nature of data. The Dataset consist of daily stock prices from January 2000 to September 2017. To analyse the time series, this paper includes two time series objects "ts" and "xts" for different time series analysis.
+
+### 1.3 Data pre-processing
+Data wrangling is done in order to fill out missing stock prices when stock market is closed and then we extracted relevant data to perform further time series analysis. We also decompose the time series to get the trend, seasonal, and random component and make visualized it.
+
+For the decomposition, we includes Simple Moving Average, it is calculated for a different number of time periods by adding the closing price for a number of time periods and then dividing this total by the number of time periods, which gives the average price of the security over the time period. It smooth out the volatility. It helps to understand trend in data.
+
+### 1.4 Time series models (technical merit)
+On training dataset, different time series methods, Holt-Winter Exponential Smoothing and Autoregressive Integrated Moving Average are applied to fit and predict the stock prices.
+
+### 1.5 Evaluation method
+Finally Root Mean Square Error(RMSE) is calculated for above methods and concluded with best possible method for stock prediction. 
+
+
+## Import and analyze data
+### 2.1 Import stock data and subset it to two columns for further analysis, we choose the close price as the price to analyse. Then plot the subsetted data for uniderstanding nature of data
+
+```{r}
+# import  and plot stock data
+amzn_read <- read.csv("AMZN.csv")
+head(amzn_read,5)
+
+#Create a new data set consisting of only 2 columns named "Date" and "Close" from input data file of stock price. 
+amzn_new <- amzn_read[c('Date','Close')]
+head(amzn_new,5)
+
+#Create 2 records as Jan1 and 2 in order to make data contineous on daily scale
+new_record <- data.frame(Date=c('2000-01-01','2000-01-02'),Close=c(89.3750,89.3750))
+
+#Add the created 2 new records to the new dataset "amazon_new"
+amzn_new <- rbind(new_record,amzn_new)
+head(amzn_new,5)
+
+#Plot the close values for amazon_new dataset in order to understand the trend of closing values
+plot(amzn_new$Close)
+```
+
+## Data wrangling
+### 3.1 Missing Values
+Since there are many days that are not trading days like holidays and weekends, we need to fill the data in time series. We can achieve it by data wrangling process. 
+
+```{r}
+#First we need to transform our data to time series object
+library(xts)
+#Create xts time series object from amazon_new dataset which consist of "Date" and "Close" columns
+amzn <- xts(amzn_new$Close,as.Date(amzn_new$Date, format='%Y-%m-%d'))
+head(amzn,5)
+
+#Second we need to fill the missing days, so that they can be decompose with seasonal components
+library(zoo)
+#Create an index consisting of contineous dates
+dates <- seq(from = as.Date('2000-01-01'),to=as.Date('2017-09-29'), by = 'days')
+
+#Fill out the missing values in time series object amzn 
+amzn <- na.approx(amzn,xout = dates)
+head(amzn,5)
+
+#Plot the amzn time series object values
+plot.xts(amzn)
+```
+
+## Decompose the time series
+### 3.1 Decompose the whole data to have a glance
+
+```{r}
+#import the processed data
+write.csv(amzn,file='./amzn_complete.csv')
+amzn_import_again <- read.csv('./amzn_complete.csv')
+head(amzn_import_again, 5)
+amzn_import_again <- amzn_import_again$V1   #Vi column strores the close price 
+
+#cobvert to time series
+amzn_import_again_ts <- ts(amzn_import_again, start=c(2000,1,1), frequency=365.25)
+
+#decompose the data
+plot(decompose(amzn_import_again_ts))
+```
+From the general decomposition result, we can find the overall trend for amazon stock is upward, increased from less than 100 dollars in 2000 to more than 950 dollars in 2017. The detailed explanation will be given below when decompose the training data before we make the forecast. 
+
+### 3.2 split the data 
+```{r}
+#split the new processed data
+date_diff <- as.Date('2017-09-29') - as.Date('2000-01-01')
+# head(date_diff,5)
+amzn_train <- window(amzn, start=as.Date('2000-01-01'), end=as.Date('2000-01-01')+ date_diff*0.7)
+amzn_valid <- window(amzn, start=as.Date('2000-01-01')+date_diff*0.7+1)
+```
+
+### 3.3 Further exploration and decomposion of training data
+### a) Find the trend using dierent number of smoothing lags
+Simple moving average is to use the average of local neighbor records to represent the current record, so that we can somehow filter the noise and find the more clear trend of the data. 
+```{r}
+#Here to smooth the irregular and get the trend 
+library(TTR)
+opar <- par(no.readonly=TRUE)
+par(mfrow=c(2,2))
+ylim <- c(min(amzn_train), max(amzn_train))
+plot(amzn_train, main="Raw time series",col='blue')
+plot(SMA(amzn_train,n=3), main="Simple Moving Averages (k=3)", ylim=ylim,col='blue')
+plot(SMA(amzn_train,n=10), main="Simple Moving Averages (k=7)", ylim=ylim,col='blue')
+plot(SMA(amzn_train,n=20) , main="Simple Moving Averages (k=15)", ylim=ylim,col='blue')
+par(opar)
+```
+From the smoothing result above, we can find the overall trend for our training data(from 2000 to 2012) is upward, although the price decreased at January 2000, Dec 2003 and middle of 2008. Further more, we can find when we us more days as lags, the overall trend is more obvious and smoother, but we need to be careful that although smoothing may contribute too many lags will lead to the missing of some features. 
+
+### b) Deeper decomposion: seasonal decompose of training data
+```{r}
+amzn_train_new <- ts(amzn_train, frequency = 365.25, start = c(2000,1,1))
+amzn_components <- decompose(amzn_train_new)   #decompose the train data
+plot(amzn_components)
+#exact scores of each component
+head(amzn_components$seasonal,10)
+head(amzn_components$trend,10)
+head(amzn_components$random,10)
+
+#use month as season 
+amzn_train_new_12 <- ts(amzn_train, frequency = 12, start = c(2000,1))
+amzn_components_12 <- decompose(amzn_train_new_12)   #decompose the train data
+plot(amzn_components_12)
+#use week as season 
+amzn_train_new_7 <- ts(amzn_train, frequency = 7, start = c(2000,1))
+amzn_components_7 <- decompose(amzn_train_new_12)   #decompose the train data
+plot(amzn_components_7)
+
+```
+
+In the above we decompose the training data, we can find the following facts:
+- We use additive model to solve compose our data, because the value range seasonal component is constant. Additive model means the general data is obtained by adding the seasonal, random and trend component.   
+- Same with assumption, the random component is a white noise.
+- From the trend plot, we can find overall trend from 2000 to 2012(range of training data-set) is upward although at the very beginning(2000) the price decreased a little bit. And the trend is smooth (low speed) from 2000 to 2009, and the price increased more quickly after 2009. This is consent with the time of explosion and recover of big 2008 financial crisis.
+- From the seasonal part of the plot, we can conclude the stock price shows yearly oscillation. Consider the seasonal component only, the price will relatively increase from February each year and get a high value at May, and then drop to July, then increase to September and keep the high level until the February next year. To sum up, the price will experience two different cycles of increase and decrease. 
+- We also tried month and week as cycle to check if there are some monthly or weekly regulations, but from the plots above, we can find there is no monthly or weekly periodic fluctuation.
+
+### Forcast with Holt-Winters model 
+Holt-winter exponential smoothing model help us to estimate the three components:level, slope and seasonal component, of our time series. The parameter alpha, beta and gamma controls the estimates of level, slop of trend and seasonal component respectively. This model has been proved to be very good for short time prediction.
+
+### 4.1 Fit the training data with Holt-Winters exponential smoothing algorithm
+Before we apply time series forecast model, we need to remove the noise in the data to avoid over-fitting.
+```{r}
+#some random is NA, we need to replace by zeros
+amzn_components$random[is.na(amzn_components$random)] <- 0
+amzn_train_new <- amzn_components$x - amzn_components$random
+#remove the noise and plot the processed data
+plot(amzn_train_new)
+
+#apply the Holt-Winter algorithm 
+amzn_fcst_exp_current<- HoltWinters(amzn_train_new, beta=FALSE, gamma=FALSE)
+amzn_fcst_exp_current
+head(amzn_fcst_exp_current$fitted, 5)
+plot(amzn_fcst_exp_current)
+```
+
+From the fitting plot above, the **red line** is the fitted value for corresponding time. And we can find the fitted values and raw data are very close, which means Holt-Winter works well here.
+In the result of parameter coefficient, alpha is 0.999921, which is very close to 1, meaning that recent values have great influence. (If it is close to 0, it means the record far away matters.)
+
+### 4.2 Forecast the future using Holt-Winter 
+```{r}
+library('forecast')
+amzn_fcst_exp_future <- forecast(amzn_fcst_exp_current, h=round(50))
+#then plot it
+summary(amzn_fcst_exp_future)
+plot(amzn_fcst_exp_future)
+```
+The above is the result of Holt-Winter algorithm when forecasting the stock in the following 50 days. The format of the plot is: the line in the middle is the point of forecast, here it is 212.4532 dollars; the dark cycle is the boundary of 80% significance range, and the outer range is the low and high range of 95% significance.
+Also from above, we can see the RMSE for the fitting of training data, which is 1.07.
+
+### 4.3 Fit the train data with ARIMA algorithm
+Before we do the forecast suing ARIMA, we need to do the difference operation to make the time series to be processed stationary. 
+```{r}
+#ARIMA
+amzn_diff1 <- diff(amzn_import_again, differences=1)   #we pick difference = 1 and is good
+plot.ts(amzn_diff1)
+
+acf(amzn_diff1, lag.max=20)   
+acf(amzn_diff1, lag.max=20,plot=FALSE)    #we get p = 2
+
+pacf(amzn_diff1, lag.max=20)   
+pacf(amzn_diff1, lag.max=20,plot=FALSE)    #we get q = 2
+```
+
+Differencing is done to convert a non-stationary to a stationary time series which is indicated by the "d" value in the model,i.e. if d = 1, check for the difference between two time series entries, if d = 2, check for the differences of the differences obtained at d =1, and so forth. For this model, d value 1 is sufficient. As we can find below, we picked one to perform difference, and make the processed data white noise, so that we can regard it as stationary.  
+
+In ARIMA, Autoregression is used to calculate p value in model. By applying ACF, We plotted ACF vs Lag plot to find out p value for this model. "P"" value equal to 2 is obtained from plot. Moving Average is represented by the "q" value which is the number of lagged values of the error term. In order to estimate q value for this model, we plotted PACF vs lag and we got q=2.
+
+### 4.4 Forecast the future using ARIMA
+```{r}
+#split the training and validation data
+leng<-length(amzn_import_again)*0.7
+amzn_train_arima <- amzn_import_again[1:leng]    
+amzn_valid_arima <- amzn_import_again[(leng+1):length(amzn_import_again)]
+
+#apply algorithm
+amzn_arima <- arima(amzn_train_arima, order = c(2,1,2))
+summary(amzn_arima)
+#forecast the past
+amzn_arima_future <- forecast(amzn_arima, h=50)
+plot(amzn_arima_future)
+#Ljung-Box test
+Box.test(amzn_arima$residuals, lag=20, type="Ljung-Box")
+
+```
+The explanantion of the result is that:
+
+The coefficient above,i.e. ar1, ar2, ma1, ma2 corresponds to the coefficients and moving average coefficients. ar1, -0.3088, represents the record one day before has negative impact on the perdition, while ar2, 0.3631, means the record two days before has positive impact on the perdition. Similarly, ma1, 0.3420, means the white noise (random component) one day before, has positive impact on current day's prediction; while ma2, -0.3592, this indicates that, white noise two days before has negative impact on current day's prediction.
+
+Since the correlogram shows that none of the sample autocorrelations for lags 1-20 exceed the significance bounds, and the p-value for the Ljung-Box test is 0.29, we can conclude that there is very little evidence for non-zero autocorrelations in the forecast errors at lags 1-20.
+
+
+
+
+## Evaluation of models
+Here we will evaluate the model in two part: how the model fits the training data using RMSE and how it performs when
+forecasting for the following 50 days.
+```{r}
+#how the models fit the training data
+print('For traing data, RMSE of Exponential Smoothing model is:')
+summary(amzn_fcst_exp_future)
+print('For training data, RMSE of ARIMA model is:')
+summary(amzn_arima)
+
+#how the models perform on the 50 dsy's forcasting
+print('For forcasting data(50 days), RMSE of Exponential Smoothing model is:')
+sqrt(sum((amzn_fcst_exp_future$mean - amzn_valid[(1:50)])^2))
+print('For forcasting data(50 days), RMSE of ARIMA is:')
+sqrt(sum((amzn_arima_future$mean -amzn_valid_arima[(1:50)])^2))
+```
+
+Conclusion of evaluation:
+From the results above, we can find on the training data, the RMSE for Holt-Winter is 1.07, while that of ARIMA is 1.92 this means Holt-Winter fits the training data better. And in the test of forecasting from validation data, we can find the RMSE of Holt-Winter and ARIMA are 71.25 and 83.87 respectively. In both evaluations of goodness of training data and validation data, Holt-Winter performs better for time series of Amazon's stock price. 
+
